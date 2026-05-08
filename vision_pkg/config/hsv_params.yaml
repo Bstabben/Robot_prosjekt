@@ -22,8 +22,8 @@ detection_node:
           upper: [180, 255, 255]
       yellow:
         range0:
-          lower: [20,  100, 100]
-          upper: [35,  255, 255]
+          lower: [15,  10, 180]
+          upper: [40, 255, 255]
       blue:
         range0:
           lower: [100, 150,  50]
