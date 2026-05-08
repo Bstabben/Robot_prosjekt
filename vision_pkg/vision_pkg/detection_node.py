@@ -1,0 +1,132 @@
+import json
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import Image
+from std_msgs.msg import String
+from cv_bridge import CvBridge
+import cv2
+import numpy as np
+
+
+# Each color entry: list of one or two [lower, upper] HSV bound pairs.
+# Red wraps around 180° in OpenCV HSV so it needs two ranges.
+DEFAULT_HSV = {
+    'red':    [([0,   120,  70], [10,  255, 255]),
+               ([170, 120,  70], [180, 255, 255])],
+    'yellow': [([20,  100,  100], [35, 255, 255])],
+    'blue':   [([100, 150,  50], [130, 255, 255])],
+}
+
+
+class DetectionNode(Node):
+    def __init__(self):
+        super().__init__('detection_node')
+
+        # --- HSV parameters (declared per color/bound so they are tunable) ---
+        self._hsv = {}
+        for color, ranges in DEFAULT_HSV.items():
+            bounds = []
+            for i, (lo, hi) in enumerate(ranges):
+                self.declare_parameter(f'hsv.{color}.range{i}.lower', lo)
+                self.declare_parameter(f'hsv.{color}.range{i}.upper', hi)
+                lower = self.get_parameter(f'hsv.{color}.range{i}.lower').value
+                upper = self.get_parameter(f'hsv.{color}.range{i}.upper').value
+                bounds.append((np.array(lower, dtype=np.uint8),
+                                np.array(upper, dtype=np.uint8)))
+            self._hsv[color] = bounds
+
+        self.declare_parameter('min_contour_area', 500)
+        self.declare_parameter('publish_debug_image', True)
+
+        self._min_area = self.get_parameter('min_contour_area').value
+        self._publish_debug = self.get_parameter('publish_debug_image').value
+
+        self._bridge = CvBridge()
+
+        self._sub = self.create_subscription(
+            Image, 'camera/image_raw', self._image_callback, 10)
+        self._pub_detections = self.create_publisher(String, 'vision/detections', 10)
+
+        if self._publish_debug:
+            self._pub_debug = self.create_publisher(Image, 'vision/debug_image', 10)
+
+        self.get_logger().info('Detection node started')
+
+    def _image_callback(self, msg: Image):
+        frame = self._bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        blurred = cv2.GaussianBlur(hsv, (5, 5), 0)
+
+        detections = {}
+        debug_frame = frame.copy() if self._publish_debug else None
+
+        for color, ranges in self._hsv.items():
+            mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+            for lower, upper in ranges:
+                mask |= cv2.inRange(blurred, lower, upper)
+
+            # Morphological cleanup
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=2)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE, kernel, iterations=1)
+
+            contours, _ = cv2.findContours(
+                mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            best = None
+            best_area = self._min_area
+            for cnt in contours:
+                area = cv2.contourArea(cnt)
+                if area > best_area:
+                    best_area = area
+                    best = cnt
+
+            if best is not None:
+                x, y, w, h = cv2.boundingRect(best)
+                cx = int(x + w / 2)
+                cy = int(y + h / 2)
+                detections[color] = {
+                    'center_px': [cx, cy],
+                    'bbox_px':   [x, y, w, h],
+                    'area_px2':  int(best_area),
+                }
+                if debug_frame is not None:
+                    color_bgr = {'red': (0, 0, 255),
+                                 'yellow': (0, 255, 255),
+                                 'blue': (255, 0, 0)}[color]
+                    cv2.rectangle(debug_frame, (x, y), (x + w, y + h), color_bgr, 2)
+                    cv2.circle(debug_frame, (cx, cy), 5, color_bgr, -1)
+                    cv2.putText(debug_frame, color, (x, y - 8),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color_bgr, 2)
+
+        payload = {
+            'stamp': {
+                'sec': msg.header.stamp.sec,
+                'nanosec': msg.header.stamp.nanosec,
+            },
+            'detections': detections,
+        }
+        out_msg = String()
+        out_msg.data = json.dumps(payload)
+        self._pub_detections.publish(out_msg)
+
+        if self._publish_debug and debug_frame is not None:
+            debug_msg = self._bridge.cv2_to_imgmsg(debug_frame, encoding='bgr8')
+            debug_msg.header = msg.header
+            self._pub_debug.publish(debug_msg)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = DetectionNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
