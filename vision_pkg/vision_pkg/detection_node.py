@@ -3,6 +3,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
+from geometry_msgs.msg import PointStamped
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -47,6 +48,12 @@ class DetectionNode(Node):
             Image, 'camera/image_raw', self._image_callback, 10)
         self._pub_detections = self.create_publisher(String, 'vision/detections', 10)
 
+        # Per-color position publishers (pixel coords, z=0)
+        self._pub_position = {
+            color: self.create_publisher(PointStamped, f'vision/{color}_position', 10)
+            for color in DEFAULT_HSV
+        }
+
         if self._publish_debug:
             self._pub_debug = self.create_publisher(Image, 'vision/debug_image', 10)
 
@@ -90,6 +97,15 @@ class DetectionNode(Node):
                     'bbox_px':   [x, y, w, h],
                     'area_px2':  int(best_area),
                 }
+
+                # Publish pixel position as PointStamped (x=col, y=row, z=0)
+                pt = PointStamped()
+                pt.header = msg.header
+                pt.point.x = float(cx)
+                pt.point.y = float(cy)
+                pt.point.z = 0.0
+                self._pub_position[color].publish(pt)
+
                 if debug_frame is not None:
                     color_bgr = {'red': (0, 0, 255),
                                  'yellow': (0, 255, 255),
