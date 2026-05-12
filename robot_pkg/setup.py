@@ -2,7 +2,7 @@ import os
 from glob import glob
 from setuptools import find_packages, setup
 
-package_name = 'vision_pkg'
+package_name = 'robot_pkg'
 
 setup(
     name=package_name,
@@ -21,18 +21,13 @@ setup(
     zip_safe=True,
     maintainer='richard',
     maintainer_email='richard.solheim21@gmail.com',
-    description='USB webcam capture and HSV-based coloured cube detection',
+    description='UR robot motion control and task coordination',
     license='MIT',
-    extras_require={
-        'test': [
-            'pytest',
-        ],
-    },
+    extras_require={'test': ['pytest']},
     entry_points={
         'console_scripts': [
-            'camera_node     = vision_pkg.camera_node:main',
-            'detection_node  = vision_pkg.detection_node:main',
-            'transform_node  = vision_pkg.transform_node:main',
+            'motion_node      = robot_pkg.motion_node:main',
+            'coordinator_node = robot_pkg.coordinator_node:main',
         ],
     },
 )
