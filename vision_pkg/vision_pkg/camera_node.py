@@ -1,8 +1,24 @@
+import yaml
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 import cv2
+
+
+def _load_camera_info(path: str) -> CameraInfo:
+    """Parse a calibration.yaml produced by cameracalibrator into a CameraInfo msg."""
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    msg = CameraInfo()
+    msg.width = data['image_width']
+    msg.height = data['image_height']
+    msg.distortion_model = data.get('distortion_model', 'plumb_bob')
+    msg.k = data['camera_matrix']['data']
+    msg.d = data['distortion_coefficients']['data']
+    msg.r = data['rectification_matrix']['data']
+    msg.p = data['projection_matrix']['data']
+    return msg
 
 
 class CameraNode(Node):
@@ -13,14 +29,36 @@ class CameraNode(Node):
         self.declare_parameter('frame_rate', 30.0)
         self.declare_parameter('frame_width', 640)
         self.declare_parameter('frame_height', 480)
+        self.declare_parameter('camera_frame', 'camera_link')
+        # Absolute path to calibration.yaml produced by cameracalibrator.
+        # Leave empty before calibration — node will warn and publish empty CameraInfo.
+        self.declare_parameter('calibration_url', '')
 
         device_id = self.get_parameter('device_id').value
         frame_rate = self.get_parameter('frame_rate').value
         width = self.get_parameter('frame_width').value
         height = self.get_parameter('frame_height').value
+        self._frame_id = self.get_parameter('camera_frame').value
+        calibration_url = self.get_parameter('calibration_url').value
+
+        self._camera_info = CameraInfo()
+        if calibration_url:
+            # Strip file:// prefix if present
+            path = calibration_url.replace('file://', '')
+            try:
+                self._camera_info = _load_camera_info(path)
+                self.get_logger().info(f'Loaded calibration from {path}')
+            except Exception as e:
+                self.get_logger().error(f'Failed to load calibration from {path}: {e}')
+        else:
+            self.get_logger().warn(
+                'calibration_url not set — publishing empty CameraInfo. '
+                'Run camera calibration and pass calibration_file:= to the launch file.'
+            )
 
         self._bridge = CvBridge()
-        self._pub = self.create_publisher(Image, 'camera/image_raw', 10)
+        self._pub_image = self.create_publisher(Image, 'camera/image_raw', 10)
+        self._pub_info = self.create_publisher(CameraInfo, 'camera/camera_info', 10)
 
         self._cap = cv2.VideoCapture(device_id)
         if not self._cap.isOpened():
@@ -43,10 +81,17 @@ class CameraNode(Node):
         if not ret:
             self.get_logger().warn('Failed to capture frame')
             return
-        msg = self._bridge.cv2_to_imgmsg(frame, encoding='bgr8')
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = 'camera_link'
-        self._pub.publish(msg)
+
+        stamp = self.get_clock().now().to_msg()
+
+        img_msg = self._bridge.cv2_to_imgmsg(frame, encoding='bgr8')
+        img_msg.header.stamp = stamp
+        img_msg.header.frame_id = self._frame_id
+        self._pub_image.publish(img_msg)
+
+        self._camera_info.header.stamp = stamp
+        self._camera_info.header.frame_id = self._frame_id
+        self._pub_info.publish(self._camera_info)
 
     def destroy_node(self):
         if self._cap.isOpened():

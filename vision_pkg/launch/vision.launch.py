@@ -21,6 +21,20 @@ def generate_launch_description():
             default_value='true',
             description='Publish annotated debug image on vision/debug_image',
         ),
+        DeclareLaunchArgument(
+            'table_z',
+            default_value='0.0',
+            description='Table surface Z in base_link frame (metres) — measure with TCP',
+        ),
+        DeclareLaunchArgument(
+            'calibration_file',
+            default_value='',
+            description=(
+                'URL to camera calibration file, e.g. '
+                'file:///home/user/calibration.yaml. '
+                'Leave empty before calibration is done.'
+            ),
+        ),
 
         Node(
             package='vision_pkg',
@@ -29,7 +43,10 @@ def generate_launch_description():
             output='screen',
             parameters=[
                 config_file,
-                {'device_id': LaunchConfiguration('device_id')},
+                {
+                    'device_id': LaunchConfiguration('device_id'),
+                    'calibration_url': LaunchConfiguration('calibration_file'),
+                },
             ],
         ),
 
@@ -41,6 +58,17 @@ def generate_launch_description():
             parameters=[
                 config_file,
                 {'publish_debug_image': LaunchConfiguration('publish_debug_image')},
+            ],
+        ),
+
+        Node(
+            package='vision_pkg',
+            executable='transform_node',
+            name='transform_node',
+            output='screen',
+            parameters=[
+                config_file,
+                {'table_z': LaunchConfiguration('table_z')},
             ],
         ),
     ])
